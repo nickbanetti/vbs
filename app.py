@@ -5,36 +5,67 @@ import json
 import time
 import io
 
-# --- 1. PAGE CONFIGURATION ---
+# --- 1. BANETTI BRANDING & CONFIG ---
 st.set_page_config(
-    page_title="Gemini Vision Scanner Pro",
-    page_icon="👁️",
+    page_title="Banetti Asset Intelligence",
+    page_icon="🔴",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("👁️ AI Vision Board Scanner Pro")
+# Inject Banetti Corporate CSS (Red/Navy Theme)
 st.markdown("""
-**Batch process workshop boards into a single dataset.**
-Supports: **Gemini 3.0**, **1.5 Pro**, and **Flash**.
+    <style>
+        /* Primary Red Buttons */
+        .stButton > button {
+            background-color: #CF2E2E !important; 
+            color: white !important;
+            border-radius: 5px;
+            border: none;
+        }
+        .stButton > button:hover {
+            background-color: #A52424 !important;
+        }
+        /* Sidebar Background */
+        [data-testid="stSidebar"] {
+            background-color: #F8F9FA;
+        }
+        /* Headers */
+        h1, h2, h3 {
+            color: #1C245D;
+        }
+        /* Progress Bar Color */
+        .stProgress > div > div > div > div {
+            background-color: #CF2E2E;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# Header with Correct Banetti Logo
+col_logo, col_title = st.columns([1, 5])
+with col_logo:
+    st.image("https://banetti.com/wp-content/uploads/2013/04/Baneti_Logo_Web21-300x133.png", width=150)
+with col_title:
+    st.title("Asset Intelligence Scanner")
+
+st.markdown("""
+**Enterprise Vision Processing for Workshop Boards & Asset Data.**
+Unified extraction for **Sticky Notes**, **Dot-Voting Matrices**, and **Hybrid Layouts**.
 """)
 
-# --- 2. HELPER FUNCTIONS ---
-
+# --- 2. INTELLIGENT MODEL LOADER ---
 def get_valid_models(api_key):
     """
-    Dynamically asks Google: 'What models can I actually use?'
-    This prevents the 404 error by never letting you select a bad model.
+    Prevents 404 Errors by asking Google exactly what this Key is allowed to touch.
+    Prioritizes Gemini 3.0 for maximum reasoning capability.
     """
     try:
         genai.configure(api_key=api_key)
         all_models = list(genai.list_models())
-        
-        # Filter for models that support content generation
         valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
         
-        # Sort specifically to put Gemini 3 / Pro at the top
         def model_sort_key(name):
+            # Priority Rank: Gemini 3 -> 1.5 Pro -> 2.0 -> Flash
             if "gemini-3" in name: return 0
             if "gemini-1.5-pro" in name: return 1
             if "gemini-2.0" in name: return 2
@@ -44,27 +75,20 @@ def get_valid_models(api_key):
         valid_models.sort(key=model_sort_key)
         return valid_models
     except Exception as e:
-        st.error(f"API Key Validation Error: {e}")
+        st.error(f"Authentication Error: {e}")
         return []
 
+# --- 3. ANALYSIS ENGINE (3-STAGE CHAIN OF THOUGHT) ---
 def analyze_single_image(image_bytes, model_name, filename):
-    """
-    Runs the 3-Stage Logic on a single image.
-    """
     model = genai.GenerativeModel(model_name)
     
-    # --- STAGE 1: STRUCTURE ---
+    # STAGE 1: Structural Recognition
     structure_prompt = """
-    Analyze this image layout.
-    1. Is it a "Dot Voting" matrix, "Sticky Notes", or "Hybrid"?
-    2. If Matrix/Voting, identify Row Headers (Categories) and Column Headers (Sentiment/Options).
+    Analyze this workshop board.
+    1. CLASSIFY: Is it "Dot Voting" (Matrix), "Sticky Notes" (Text), or "Hybrid"?
+    2. MAPPING: If Matrix, identify Row Headers (Categories) and Column Headers (Sentiment/Options).
     
-    Return JSON: 
-    {
-        "board_type": "hybrid/voting/notes", 
-        "row_headers": ["list"], 
-        "column_headers": ["list"]
-    }
+    Return JSON: {"board_type": "...", "row_headers": [], "column_headers": []}
     """
     
     try:
@@ -74,24 +98,24 @@ def analyze_single_image(image_bytes, model_name, filename):
         )
         structure = json.loads(r1.text)
     except Exception as e:
-        return None, f"Stage 1 Failed: {e}"
+        return None, f"Structure Analysis Failed: {e}"
 
-    # --- STAGE 2: CONTEXT ---
+    # STAGE 2: Context Injection
     rows = structure.get('row_headers', [])
     cols = structure.get('column_headers', [])
     
     context = ""
     if rows and cols:
         context = f"""
-        I have identified this is a Matrix.
-        ROWS found: {rows}
-        COLUMNS found: {cols}
-        CRITICAL TASK: Look at EVERY intersection (Row x Column) and COUNT the dots/pins.
+        MATRIX DETECTED.
+        ROWS: {rows}
+        COLUMNS: {cols}
+        TASK: Count dots/pins at every intersection.
         """
     else:
-        context = "Focus strictly on reading handwritten sticky notes and grouping them."
+        context = "TEXT DETECTED. Extract all handwritten notes and categorize them by spatial clusters."
 
-    # --- STAGE 3: EXECUTION ---
+    # STAGE 3: Final Extraction
     final_schema = {
         "type": "OBJECT",
         "properties": {
@@ -124,9 +148,9 @@ def analyze_single_image(image_bytes, model_name, filename):
     
     final_prompt = f"""
     {context}
-    OUTPUT RULES:
-    1. voting_data: Return one entry for every cell in the matrix. If empty, set dot_count to 0.
-    2. sticky_notes: Extract all legible handwritten text.
+    REQUIREMENTS:
+    1. voting_data: One entry per matrix cell. If empty, count=0.
+    2. sticky_notes: Complete transcription of all legible text.
     """
     
     try:
@@ -140,125 +164,116 @@ def analyze_single_image(image_bytes, model_name, filename):
         )
         return json.loads(r3.text), None
     except Exception as e:
-        return None, f"Stage 3 Failed: {e}"
+        return None, f"Extraction Failed: {e}"
 
-# --- 3. SIDEBAR & CONFIG ---
+# --- 4. APPLICATION INTERFACE ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.header("System Configuration")
     
-    # 1. API Key Strategy
+    # Secure Key Handling
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
-        st.success("✅ API Key Loaded")
+        st.success("Locked & Loaded (Secrets)")
     else:
-        api_key = st.text_input("Enter Google API Key", type="password")
+        api_key = st.text_input("API Key", type="password")
 
-    # 2. Dynamic Model Loading (The Fix for 404s)
+    # Dynamic Model Selector
     if api_key:
         valid_models = get_valid_models(api_key)
         if valid_models:
-            selected_model = st.selectbox("Select Model", valid_models, index=0)
+            selected_model = st.selectbox("Processing Engine", valid_models, index=0)
             if "gemini-3" in selected_model:
-                st.caption("✨ Gemini 3 Active")
+                st.caption("🚀 Power Mode: Gemini 3 Enabled")
         else:
-            st.error("Invalid Key or No Models Available")
+            st.error("No valid models found for this key.")
             st.stop()
     else:
-        st.warning("Enter API Key to continue")
+        st.warning("Awaiting Credentials...")
         st.stop()
 
-# --- 4. MAIN UI ---
+# Main Upload Area
 uploaded_files = st.file_uploader(
-    "Upload Board Images (Select Multiple)", 
+    "Batch Upload Board Images", 
     type=["jpg", "jpeg", "png"], 
     accept_multiple_files=True
 )
 
-if uploaded_files and st.button(f"🚀 Process {len(uploaded_files)} Images"):
+if uploaded_files and st.button(f"Process {len(uploaded_files)} Files"):
     
-    # Master Containers
+    # Master Data Containers
     all_votes = []
     all_notes = []
     
-    # Progress Bar
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    # Batch Processing Loop
     for i, file in enumerate(uploaded_files):
-        status_text.text(f"Processing {file.name} ({i+1}/{len(uploaded_files)})...")
+        status_text.markdown(f"**Processing:** `{file.name}`")
         
         image_bytes = file.getvalue()
-        
-        # RUN ANALYSIS
         data, error = analyze_single_image(image_bytes, selected_model, file.name)
         
         if error:
-            st.error(f"Error processing {file.name}: {error}")
-            if "429" in error: 
-                st.warning("Rate limit hit. Pausing for 60s...")
-                time.sleep(60)
+            st.error(f"Skipped {file.name}: {error}")
+            if "429" in error: time.sleep(60) # Auto-throttle
         elif data:
-            # Append Votes
+            # Aggregate Data
             if data.get("voting_data"):
                 for v in data["voting_data"]:
                     v["source_file"] = file.name
                     all_votes.append(v)
             
-            # Append Notes
             if data.get("sticky_notes"):
                 for n in data["sticky_notes"]:
                     n["source_file"] = file.name
                     all_notes.append(n)
         
-        # Update Progress
         progress_bar.progress((i + 1) / len(uploaded_files))
 
-    status_text.text("✅ Batch Processing Complete!")
+    status_text.success("Batch Processing Complete.")
     
-    # --- 5. EXPORT SECTION ---
+    # --- 5. CONSOLIDATED EXPORT ---
     st.divider()
-    st.subheader("📥 Download Results")
+    st.subheader("Global Data Export")
     
     col1, col2 = st.columns(2)
     
-    # PREPARE DATAFRAMES
     df_votes = pd.DataFrame(all_votes)
     df_notes = pd.DataFrame(all_notes)
     
-    # OPTION 1: EXCEL (Tabs)
+    # Excel Export (Multi-Tab)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         if not df_votes.empty:
-            df_votes.to_excel(writer, sheet_name='Voting Data', index=False)
+            df_votes.to_excel(writer, sheet_name='Dot Voting Data', index=False)
         if not df_notes.empty:
-            df_notes.to_excel(writer, sheet_name='Sticky Notes', index=False)
+            df_notes.to_excel(writer, sheet_name='Sticky Notes Text', index=False)
             
     with col1:
         st.download_button(
-            label="📄 Download Excel (Tabs)",
+            label="📥 Download Consolidated Excel",
             data=buffer.getvalue(),
-            file_name="batch_analysis.xlsx",
+            file_name="Banetti_Workshop_Data.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # OPTION 2: MASTER CSV
-    # We merge everything into one massive list if possible, or just give the main one
+    # Master CSV Export (Notes Only)
     with col2:
         if not df_notes.empty:
             csv_data = df_notes.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📊 Download Master CSV (Notes)",
+                label="📥 Download Master CSV (Text)",
                 data=csv_data,
-                file_name="master_notes.csv",
+                file_name="Banetti_Master_Notes.csv",
                 mime="text/csv"
             )
             
-    # PREVIEW
-    st.write("### Data Preview")
+    # Data Previews
     if not df_votes.empty:
-        st.write("**Voting Data**")
-        st.dataframe(df_votes.head())
+        st.write("### Global Voting Matrix")
+        st.dataframe(df_votes, use_container_width=True)
         
     if not df_notes.empty:
-        st.write("**Sticky Notes**")
-        st.dataframe(df_notes.head())
+        st.write("### Global Sticky Notes")
+        st.dataframe(df_notes, use_container_width=True)
