@@ -4,6 +4,7 @@ import pandas as pd
 import json
 import time
 import io
+import re
 
 # --- 1. BANETTI BRANDING & CONFIG ---
 st.set_page_config(
@@ -53,11 +54,19 @@ st.markdown("""
 Unified extraction for **Sticky Notes**, **Dot-Voting Matrices**, and **Hybrid Layouts**.
 """)
 
-# --- 2. INTELLIGENT MODEL LOADER ---
+# --- 2. HELPER FUNCTIONS ---
+
+def clean_json_string(json_str):
+    """
+    Cleans markdown formatting from JSON strings (e.g. ```json ... ```)
+    """
+    json_str = re.sub(r'```json\s*', '', json_str)
+    json_str = re.sub(r'```\s*', '', json_str)
+    return json_str.strip()
+
 def get_valid_models(api_key):
     """
     Prevents 404 Errors by asking Google exactly what this Key is allowed to touch.
-    Prioritizes Gemini 3.0 for maximum reasoning capability.
     """
     try:
         genai.configure(api_key=api_key)
@@ -78,7 +87,7 @@ def get_valid_models(api_key):
         st.error(f"Authentication Error: {e}")
         return []
 
-# --- 3. ANALYSIS ENGINE (3-STAGE CHAIN OF THOUGHT) ---
+# --- 3. ANALYSIS ENGINE ---
 def analyze_single_image(image_bytes, model_name, filename, status_container=None):
     model = genai.GenerativeModel(model_name)
     
@@ -99,7 +108,9 @@ def analyze_single_image(image_bytes, model_name, filename, status_container=Non
             [{'mime_type': 'image/jpeg', 'data': image_bytes}, structure_prompt],
             generation_config=genai.GenerationConfig(response_mime_type="application/json")
         )
-        structure = json.loads(r1.text)
+        # Clean JSON before loading
+        structure = json.loads(clean_json_string(r1.text))
+        
         if status_container:
             status_container.write(f"✅ Detected: {structure.get('board_type', 'Unknown')}")
     except Exception as e:
@@ -173,7 +184,7 @@ def analyze_single_image(image_bytes, model_name, filename, status_container=Non
                 temperature=0.0
             )
         )
-        return json.loads(r3.text), None
+        return json.loads(clean_json_string(r3.text)), None
     except Exception as e:
         return None, f"Extraction Failed: {e}"
 
@@ -225,13 +236,23 @@ if uploaded_files and st.button(f"Process {len(uploaded_files)} Files"):
         with st.status(f"Processing **{file.name}**...", expanded=True) as status:
             image_bytes = file.getvalue()
             
-            # Pass the status container to the function so it can update us live
+            # Pass the status container to the function
             data, error = analyze_single_image(image_bytes, selected_model, file.name, status_container=status)
             
             if error:
-                status.update(label=f"❌ Failed: {file.name}", state="error")
-                st.error(f"Skipped {file.name}: {error}")
-                if "429" in error: time.sleep(60) # Auto-throttle
+                if "429" in str(error):
+                    status.update(label=f"⚠️ Rate Limit Hit on {file.name}", state="error")
+                    st.warning("API Rate Limit reached. Cooling down for 60s...")
+                    # Visual Countdown
+                    with st.empty():
+                        for seconds in range(60, 0, -1):
+                            st.write(f"⏳ Resuming in {seconds}s...")
+                            time.sleep(1)
+                        st.write("🔄 Resuming...")
+                else:
+                    status.update(label=f"❌ Failed: {file.name}", state="error")
+                    st.error(f"Skipped {file.name}: {error}")
+            
             elif data:
                 status.update(label=f"✅ Completed: {file.name}", state="complete")
                 
