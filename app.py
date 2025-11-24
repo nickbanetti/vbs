@@ -91,102 +91,120 @@ def get_valid_models(api_key):
 def analyze_single_image(image_bytes, model_name, filename, status_container=None):
     model = genai.GenerativeModel(model_name)
     
-    # STAGE 1: Structural Recognition
-    if status_container:
-        status_container.write("🔹 Stage 1: Identifying Board Architecture...")
-        
-    structure_prompt = """
-    Analyze this workshop board.
-    1. CLASSIFY: Is it "Dot Voting" (Matrix), "Sticky Notes" (Text), or "Hybrid"?
-    2. MAPPING: If Matrix, identify Row Headers (Categories) and Column Headers (Sentiment/Options).
-    
-    Return JSON: {"board_type": "...", "row_headers": [], "column_headers": []}
-    """
-    
-    try:
-        r1 = model.generate_content(
-            [{'mime_type': 'image/jpeg', 'data': image_bytes}, structure_prompt],
-            generation_config=genai.GenerationConfig(response_mime_type="application/json")
-        )
-        # Clean JSON before loading
-        structure = json.loads(clean_json_string(r1.text))
-        
-        if status_container:
-            status_container.write(f"✅ Detected: {structure.get('board_type', 'Unknown')}")
-    except Exception as e:
-        return None, f"Structure Analysis Failed: {e}"
-
-    # STAGE 2: Context Injection
-    if status_container:
-        status_container.write("🔹 Stage 2: Formulating Counting Strategy...")
-        
-    rows = structure.get('row_headers', [])
-    cols = structure.get('column_headers', [])
-    
-    context = ""
-    if rows and cols:
-        context = f"""
-        MATRIX DETECTED.
-        ROWS: {rows}
-        COLUMNS: {cols}
-        TASK: Count dots/pins at every intersection.
-        """
-    else:
-        context = "TEXT DETECTED. Extract all handwritten notes and categorize them by spatial clusters."
-
-    # STAGE 3: Final Extraction
-    if status_container:
-        status_container.write(f"🔹 Stage 3: Running Extraction on {model_name}...")
-        
-    final_schema = {
-        "type": "OBJECT",
-        "properties": {
-            "voting_data": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "row_label": {"type": "STRING"},
-                        "column_label": {"type": "STRING"},
-                        "dot_count": {"type": "INTEGER"},
-                        "color_breakdown": {"type": "STRING"}
-                    }
-                }
-            },
-            "sticky_notes": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "text": {"type": "STRING"},
-                        "category_context": {"type": "STRING"},
-                        "confidence": {"type": "INTEGER"}
-                    }
-                }
-            }
-        },
-        "required": ["voting_data", "sticky_notes"]
-    }
-    
-    final_prompt = f"""
-    {context}
-    REQUIREMENTS:
-    1. voting_data: One entry per matrix cell. If empty, count=0.
-    2. sticky_notes: Complete transcription of all legible text.
-    """
-    
-    try:
-        r3 = model.generate_content(
-            [{'mime_type': 'image/jpeg', 'data': image_bytes}, final_prompt],
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=final_schema,
-                temperature=0.0
+    # --- RETRY LOGIC WRAPPER ---
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # STAGE 1: Structural Recognition
+            if status_container:
+                status_container.write("🔹 Stage 1: Identifying Board Architecture...")
+                
+            structure_prompt = """
+            Analyze this workshop board.
+            1. CLASSIFY: Is it "Dot Voting" (Matrix), "Sticky Notes" (Text), or "Hybrid"?
+            2. MAPPING: If Matrix, identify Row Headers (Categories) and Column Headers (Sentiment/Options).
+            
+            Return JSON: {"board_type": "...", "row_headers": [], "column_headers": []}
+            """
+            
+            r1 = model.generate_content(
+                [{'mime_type': 'image/jpeg', 'data': image_bytes}, structure_prompt],
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0
+                )
             )
-        )
-        return json.loads(clean_json_string(r3.text)), None
-    except Exception as e:
-        return None, f"Extraction Failed: {e}"
+            # Clean JSON before loading
+            structure = json.loads(clean_json_string(r1.text))
+            
+            if status_container:
+                status_container.write(f"✅ Detected: {structure.get('board_type', 'Unknown')}")
+
+            # STAGE 2: Context Injection
+            if status_container:
+                status_container.write("🔹 Stage 2: Formulating Counting Strategy...")
+                
+            rows = structure.get('row_headers', [])
+            cols = structure.get('column_headers', [])
+            
+            context = ""
+            if rows and cols:
+                context = f"""
+                MATRIX DETECTED.
+                ROWS: {rows}
+                COLUMNS: {cols}
+                TASK: Count dots/pins at every intersection.
+                """
+            else:
+                context = "TEXT DETECTED. Extract all handwritten notes and categorize them by spatial clusters."
+
+            # STAGE 3: Final Extraction
+            if status_container:
+                status_container.write(f"🔹 Stage 3: Running Extraction on {model_name}...")
+                
+            final_schema = {
+                "type": "OBJECT",
+                "properties": {
+                    "voting_data": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "row_label": {"type": "STRING"},
+                                "column_label": {"type": "STRING"},
+                                "dot_count": {"type": "INTEGER"},
+                                "color_breakdown": {"type": "STRING"}
+                            }
+                        }
+                    },
+                    "sticky_notes": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "text": {"type": "STRING"},
+                                "category_context": {"type": "STRING"},
+                                "confidence": {"type": "INTEGER"}
+                            }
+                        }
+                    }
+                },
+                "required": ["voting_data", "sticky_notes"]
+            }
+            
+            final_prompt = f"""
+            {context}
+            REQUIREMENTS:
+            1. voting_data: One entry per matrix cell. If empty, count=0.
+            2. sticky_notes: Complete transcription of all legible text.
+            """
+            
+            # INCREASED MAX TOKENS to prevent cut-off JSON
+            r3 = model.generate_content(
+                [{'mime_type': 'image/jpeg', 'data': image_bytes}, final_prompt],
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=final_schema,
+                    temperature=0.0,
+                    max_output_tokens=8192
+                )
+            )
+            return json.loads(clean_json_string(r3.text)), None
+
+        except Exception as e:
+            error_msg = str(e)
+            # Check for Rate Limit (429) - Don't retry immediately, let the outer loop handle waiting
+            if "429" in error_msg:
+                return None, "429 Rate Limit"
+            
+            # For JSON errors or other glitches, retry
+            if attempt < max_retries - 1:
+                if status_container:
+                    status_container.warning(f"⚠️ Attempt {attempt+1} failed. Retrying...")
+                time.sleep(2) # Brief pause before retry
+                continue
+            else:
+                return None, f"Failed after {max_retries} attempts: {e}"
 
 # --- 4. APPLICATION INTERFACE ---
 with st.sidebar:
