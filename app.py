@@ -79,10 +79,13 @@ def get_valid_models(api_key):
         return []
 
 # --- 3. ANALYSIS ENGINE (3-STAGE CHAIN OF THOUGHT) ---
-def analyze_single_image(image_bytes, model_name, filename):
+def analyze_single_image(image_bytes, model_name, filename, status_container=None):
     model = genai.GenerativeModel(model_name)
     
     # STAGE 1: Structural Recognition
+    if status_container:
+        status_container.write("🔹 Stage 1: Identifying Board Architecture...")
+        
     structure_prompt = """
     Analyze this workshop board.
     1. CLASSIFY: Is it "Dot Voting" (Matrix), "Sticky Notes" (Text), or "Hybrid"?
@@ -97,10 +100,15 @@ def analyze_single_image(image_bytes, model_name, filename):
             generation_config=genai.GenerationConfig(response_mime_type="application/json")
         )
         structure = json.loads(r1.text)
+        if status_container:
+            status_container.write(f"✅ Detected: {structure.get('board_type', 'Unknown')}")
     except Exception as e:
         return None, f"Structure Analysis Failed: {e}"
 
     # STAGE 2: Context Injection
+    if status_container:
+        status_container.write("🔹 Stage 2: Formulating Counting Strategy...")
+        
     rows = structure.get('row_headers', [])
     cols = structure.get('column_headers', [])
     
@@ -116,6 +124,9 @@ def analyze_single_image(image_bytes, model_name, filename):
         context = "TEXT DETECTED. Extract all handwritten notes and categorize them by spatial clusters."
 
     # STAGE 3: Final Extraction
+    if status_container:
+        status_container.write(f"🔹 Stage 3: Running Extraction on {model_name}...")
+        
     final_schema = {
         "type": "OBJECT",
         "properties": {
@@ -204,34 +215,41 @@ if uploaded_files and st.button(f"Process {len(uploaded_files)} Files"):
     all_votes = []
     all_notes = []
     
+    # GLOBAL PROGRESS BAR
     progress_bar = st.progress(0)
-    status_text = st.empty()
     
     # Batch Processing Loop
     for i, file in enumerate(uploaded_files):
-        status_text.markdown(f"**Processing:** `{file.name}`")
         
-        image_bytes = file.getvalue()
-        data, error = analyze_single_image(image_bytes, selected_model, file.name)
-        
-        if error:
-            st.error(f"Skipped {file.name}: {error}")
-            if "429" in error: time.sleep(60) # Auto-throttle
-        elif data:
-            # Aggregate Data
-            if data.get("voting_data"):
-                for v in data["voting_data"]:
-                    v["source_file"] = file.name
-                    all_votes.append(v)
+        # LIVE STATUS CONTAINER
+        with st.status(f"Processing **{file.name}**...", expanded=True) as status:
+            image_bytes = file.getvalue()
             
-            if data.get("sticky_notes"):
-                for n in data["sticky_notes"]:
-                    n["source_file"] = file.name
-                    all_notes.append(n)
+            # Pass the status container to the function so it can update us live
+            data, error = analyze_single_image(image_bytes, selected_model, file.name, status_container=status)
+            
+            if error:
+                status.update(label=f"❌ Failed: {file.name}", state="error")
+                st.error(f"Skipped {file.name}: {error}")
+                if "429" in error: time.sleep(60) # Auto-throttle
+            elif data:
+                status.update(label=f"✅ Completed: {file.name}", state="complete")
+                
+                # Aggregate Data
+                if data.get("voting_data"):
+                    for v in data["voting_data"]:
+                        v["source_file"] = file.name
+                        all_votes.append(v)
+                
+                if data.get("sticky_notes"):
+                    for n in data["sticky_notes"]:
+                        n["source_file"] = file.name
+                        all_notes.append(n)
         
+        # Update Global Progress
         progress_bar.progress((i + 1) / len(uploaded_files))
 
-    status_text.success("Batch Processing Complete.")
+    st.success("Batch Processing Complete.")
     
     # --- 5. CONSOLIDATED EXPORT ---
     st.divider()
